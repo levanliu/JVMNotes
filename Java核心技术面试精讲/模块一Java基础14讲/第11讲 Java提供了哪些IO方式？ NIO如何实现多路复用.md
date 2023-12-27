@@ -1,4 +1,137 @@
 
+### Java 提供了哪些 IO 方式？ NIO 如何实现多路复用？
+
+### 典型回答
+
+Java IO 方式有很多种，基于不同的 IO 抽象模型和交互方式，可以进行简单区分。
+- 第一，传统的 java.io 包，它基于流模型实现，提供了我们最熟知的一些 IO 功能，比如 File 抽象、输入输出流等。交互方式是同步、阻塞的方式，也就是说，在读取输入流或者写入输出流时，在读、写动作完成之前，线程会一直阻塞在那里，它们之间的调用是可靠的线性顺序。java.io 包的好处是代码比较简单、直观，缺点则是 IO 效率和扩展性存在局限性，容易成为应用性能的瓶颈。很多时候，人们也把 java.net 下面提供的部分网络 API，比如 Socket、ServerSocket、HttpURLConnection 也归类到同步阻塞 IO 类库，因为网络通信同样是 IO 行为。
+- 第二，在 Java 1.4 中引入了 NIO 框架（java.nio 包），提供了 Channel、Selector、Buffer 等新的抽象，可以构建多路复用的、同步非阻塞 IO 程序，同时提供了更接近操作系统底层的高性能数据操作方式。
+- 第三，在 Java 7 中，NIO 有了进一步的改进，也就是 NIO 2，引入了异步非阻塞 IO 方式，也有很多人叫它 AIO（Asynchronous IO）。异步 IO 操作基于事件和回调机制，可以简单理解为，应用操作直接返回，而不会阻塞在那里，当后台处理完成，操作系统会通知相应线程进行后续工作。
+  
+1. Java NIO概览
+   ```cpp
+   - Buffer，高效的数据容器，除了布尔类型，所有原始数据类型都有相应的 Buffer 实现。Channel，类似在 Linux 之类操作系统上看到的文件描述符，是 NIO 中被用来支持批量式 IO 操作的一种抽象。
+   - File 或者 Socket，通常被认为是比较高层次的抽象，而 Channel 则是更加操作系统底层的一种抽象，这也使得 NIO 得以充分利用现代操作系统底层机制，获得特定场景的性能优化，例如，DMA（Direct Memory Access）等。不同层次的抽象是相互关联的，我们可以通过 Socket 获取 Channel，反之亦然。
+   - Selector，是 NIO 实现多路复用的基础，它提供了一种高效的机制，可以检测到注册在 Selector 上的多个 Channel 中，是否有 Channel 处于就绪状态，进而实现了单线程对多 Channel 的高效管理。Selector 同样是基于底层操作系统机制，不同模式、不同版本都存在区别，例如，在最新的代码库里，相关实现如下：Linux 上依赖于epoll，Windows 上 NIO2（AIO）模式则是依赖于iocp。```
+2. ![Alt text](image.png)
+```Java
+public class DemoServer extends Thread {
+    private ServerSocket serverSocket;
+    public int getPort() {
+        return  serverSocket.getLocalPort();
+    }
+    public void run() {
+        try {
+            serverSocket = new ServerSocket(0);
+            while (true) {
+                Socket socket = serverSocket.accept();
+                RequestHandler requestHandler = new RequestHandler(socket);
+                requestHandler.start();
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
+        } finally {
+            if (serverSocket != null) {
+                try {
+                    serverSocket.close();
+                } catch (IOException e) {
+                    e.printStackTrace();
+                }
+                ;
+            }
+        }
+    }
+    public static void main(String[] args) throws IOException {
+        DemoServer server = new DemoServer();
+        server.start();
+        try (Socket client = new Socket(InetAddress.getLocalHost(), server.getPort())) {
+            BufferedReader bufferedReader = new BufferedReader(new                   InputStreamReader(client.getInputStream()));
+            bufferedReader.lines().forEach(s -> System.out.println(s));
+        }
+    }
+ }
+// 简化实现，不做读取，直接发送字符串
+class RequestHandler extends Thread {
+    private Socket socket;
+    RequestHandler(Socket socket) {
+        this.socket = socket;
+    }
+    @Override
+    public void run() {
+        try (PrintWriter out = new PrintWriter(socket.getOutputStream());) {
+            out.println("Hello world!");
+            out.flush();
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+ }
+
+serverSocket = new ServerSocket(0);
+executor = Executors.newFixedThreadPool(8);
+ while (true) {
+    Socket socket = serverSocket.accept();
+    RequestHandler requestHandler = new RequestHandler(socket);
+    executor.execute(requestHandler);
+}
+```
+
+
+```Java
+public class NIOServer extends Thread {
+    public void run() {
+        try (Selector selector = Selector.open();
+             ServerSocketChannel serverSocket = ServerSocketChannel.open();) {// 创建Selector和Channel
+            serverSocket.bind(new InetSocketAddress(InetAddress.getLocalHost(), 8888));
+            serverSocket.configureBlocking(false);
+            // 注册到Selector，并说明关注点
+            serverSocket.register(selector, SelectionKey.OP_ACCEPT);
+            while (true) {
+                selector.select();// 阻塞等待就绪的Channel，这是关键点之一
+                Set<SelectionKey> selectedKeys = selector.selectedKeys();
+                Iterator<SelectionKey> iter = selectedKeys.iterator();
+                while (iter.hasNext()) {
+                    SelectionKey key = iter.next();
+                   // 生产系统中一般会额外进行就绪状态检查
+                    sayHelloWorld((ServerSocketChannel) key.channel());
+                    iter.remove();
+                }
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+    private void sayHelloWorld(ServerSocketChannel server) throws IOException {
+        try (SocketChannel client = server.accept();) {          client.write(Charset.defaultCharset().encode("Hello world!"));
+        }
+    }
+   // 省略了与前面类似的main
+}
+```
+![Alt text](image-1.png)
+
+
+NIO2 异步IO，利用事件和回调，处理Accept，Read等操作。
+
+```Java
+AsynchronousServerSocketChannel serverSock =        AsynchronousServerSocketChannel.open().bind(sockAddr);
+serverSock.accept(serverSock, new CompletionHandler<>() { //为异步操作指定CompletionHandler回调函数
+    @Override
+    public void completed(AsynchronousSocketChannel sockChannel, AsynchronousServerSocketChannel serverSock) {
+        serverSock.accept(serverSock, this);
+        // 另外一个 write（sock，CompletionHandler{}）
+        sayHelloWorld(sockChannel, Charset.defaultCharset().encode
+                ("Hello World!"));
+    }
+  // 省略其他路径处理方法...
+});
+```
+多路复用器监控多个连接的I/O状态，并使用一个线程轮询这些连接，只有当连接有I/O事件时，才会使用线程进行具体的I/O操作。这种方式使得单个线程可以处理多个连接的I/O操作，极大地提高了并发性能。
+
+在多线程和NIO结合的场景中，可以通过创建多个线程，每个线程运行一个NIO的多路复用器，来同时处理多个连接的I/O操作。每个NIO线程负责管理一部分连接，当有I/O事件触发时，NIO线程会进行相应的处理，实现高效的并发处理。
+
+鉴于其编程要素（如 Future、CompletionHandler 等），我们还没有进行准备工作，为避免理解困难，我会在专栏后面相关概念补充后的再进行介绍，尤其是 Reactor、Proactor 模式等方面将在 Netty 主题一起分析，这里我先进行概念性的对比：基本抽象很相似，AsynchronousServerSocketChannel 对应于上面例子中的 ServerSocketChannel；AsynchronousSocketChannel 则对应 SocketChannel。业务逻辑的关键在于，通过指定 CompletionHandler 回调接口，在 accept/read/write 等关键节点，通过事件机制调用，这是非常不同的一种编程思路。
+
 ### mmap的使用
 
 1. 打开文件
